@@ -36,10 +36,10 @@ uniform mat4 uProjectionMatrix;
 out vec3 vPos;
 out vec4 vNormalInView;
 out vec3 n,l,v;
-out vec3 vNormal;
+// out vec3 vNormal;
 
 void main() {
-  vPos = aVertexPosition;
+  vPos = aVertexPosition; // pass it to fs to do per-pixel shading
   vNormalInView = uModelViewMatrix*vec4(aVertexNormal, 1.0);
 
   n = normalize(uNormalMatrix*aVertexNormal);
@@ -47,7 +47,7 @@ void main() {
   vec4 p = uModelViewMatrix*vec4(aVertexPosition, 1.0);
   v = normalize(-p.xyz);
 
-  vNormal = aVertexNormal;
+  // vNormal = aVertexNormal;
 
   gl_Position = uProjectionMatrix*uModelViewMatrix*vec4(aVertexPosition, 1.0);
 }
@@ -61,7 +61,7 @@ var fs = `#version 300 es
 
 precision mediump float;
     
-in vec3 vNormal;
+// in vec3 vNormal;
 in vec3 vPos;
 in vec4 vNormalInView;
 in vec3 n,l,v;
@@ -72,30 +72,142 @@ uniform sampler2D uSampler2;
 out vec4 outColor;
 
 #define PI acos(-1.0)
+
+// extra credit: sampler with procedual texture 
+// added a heart shape
+// if the region is not in the heart, 
+//   then fall back to file texture map
+vec3 mysampler(float s, float t) {
+  if (s > 0.35 && s < 0.45) {
+    float d = 1.3;
+    float q = (t - 0.45) * d / 0.2;
+    float p = (s - 0.4) * 1.3 / 0.05;
+
+    float delta = pow(p, 4.0 / 3.0) - 4.0 * (p*p-1.0);
+    if (delta > 0.0) {
+      float q1 = (pow(p, 2.0 / 3.0) - sqrt(delta)) / 2.0;
+      float q2 = (pow(p, 2.0 / 3.0) + sqrt(delta)) / 2.0;
+      if (q > q1 && q < q2)  {
+        return vec3(1.0, 0.0, 0.0);
+      }
+    }
+  }
+  return vec3(texture(uSampler, vec2(s,t)));
+}
+
+// extra credit: bump mapping
+// height is calculated from the texture
+float B(float s, float t) {
+  vec3 tex = mysampler(s, t);
+  float ret;
+
+  if (tex.x > 0.8 && tex.y > 0.8 && tex.z > 0.8) {
+    ret = 0.5;
+  } else if (tex.x > 0.3){
+    ret = 1.0;
+  } else {
+    ret = 0.0;
+  }
+
+  return ret;
+}
+
+// for extra credit: Oren-Nayar diffuse Reflectance
+float cosTheta (vec3 w) {
+  return w.z;
+}
+float cos2Theta (vec3 w) {
+  return w.z * w.z;
+}
+float sin2Theta (vec3 w) {
+  return max(0.0, 1.0 - cos2Theta(w));
+}
+float sinTheta (vec3 w) {
+  return sqrt(sin2Theta(w));
+}
+float SinPhi(vec3 w) {
+  float sintheta = sinTheta(w);
+  if (sintheta == 0.0) {
+    return 0.0;
+  } else {
+    return clamp(w.y / sintheta, -1.0, 1.0);
+  }
+}
+float CosPhi(vec3 w) {
+  float sintheta = sinTheta(w);
+  if (sintheta == 0.0) {
+    return 1.0;
+  } else {
+    return clamp(w.x / sintheta, -1.0, 1.0);
+  }
+}
     
 void main() {
+  // texture
   vec2 tc = vec2(
     atan(vPos.z, -vPos.x) / (PI * 2.0) + 0.5, //0.0, 1.0), 
-    (vPos.y + 0.5) * 2.0 + 0.5
+    (vPos.y + 0.5) * 2.0 - 0.5
   );
-  vec3 illinois = vec3(texture(uSampler, tc));
+  vec3 illinois = mysampler(tc.s, tc.t);
   if (tc.s > 0.95 || tc.s < 0.05) {
     illinois = vec3(1.0, 1.0, 1.0);
   }
 
+  // spherical map
   vec2 sm = vec2( (vNormalInView.x + 1.0) * 0.5,  (vNormalInView.y + 1.0) * 0.5);
   vec3 stadium = vec3(texture(uSampler2, sm));
   vec3 color = 0.5*stadium + 0.5*illinois;
 
-  vec3 n2 = normalize(n);
+  // bump mapping: adjust the normal  
+  vec3 npie = n;
+  if (tc.s > 0.05 && tc.s < 0.95) {
+    float z = sqrt((n.x * n.x) / (n.x*n.x + n.z * n.z));
+    float x = (-(n.z * z)) / n.x;
+    vec3 ps0 = vec3(x,0.0,z);
+    vec3 pt = cross(n, ps0);
+    if (pt.y > 0.0) {
+      pt = -1.0 * pt;
+    }
+    float h = 0.005;
+    npie = n - ( B(tc.s+h, tc.t) - B(tc.s,tc.t) ) / h * cross(n,pt) + ( B(tc.s,tc.t + h)- B(tc.s, tc.t)) / h * pt;
+  }
+
+  // diffuse and specular
+  // For extra credit: change lambertian to Oren–Nayar Diffuse Reflection 
+  // source: https://link.springer.com/referenceworkentry/10.1007%2F978-0-387-31439-6_535
+  // source: https://www.pbr-book.org/3ed-2018/Reflection_Models/Microfacet_Models
+  vec3 n2 = normalize(npie);
   vec3 l3 = normalize(vec3(1.0, 1.0, 1.0));
   vec3 v2 = normalize(v);
 
-  float lamb = max(dot(n2,l3), 0.0);
+  float sinthetaI = sinTheta(l3);
+  float sinthetaO = sinTheta(v2);
+  float maxCos = 0.0;
+  if (sinthetaI > 1e-4 && sinthetaO > 1e-4) {
+    float sinPhiI = SinPhi(l3);
+    float cosPhiI = CosPhi(l3);
+    float sinPhiO = SinPhi(v2);
+    float cosPhiO = CosPhi(v2);
+    float dCos = cosPhiI * cosPhiO + sinPhiI * sinPhiO;
+    maxCos = max(0.0, dCos);
+  } 
+  float sinAlpha, tanBeta;
+  if (abs(cosTheta(l3)) > abs(cosTheta(v2))) {
+    sinAlpha = sinthetaO;
+    tanBeta = sinthetaI / abs(cosTheta(l3));
+  } else {
+    sinAlpha = sinthetaI;
+    tanBeta = sinthetaO / abs(cosTheta(v2));
+  }
+  float sigma = 0.35;
+  float A = 1.0 - 0.5 * sigma * sigma / (sigma *sigma + 0.09);
+  float B = 0.45 * sigma * sigma / (sigma * sigma + 0.09);
+  float multi = A + B * maxCos * sinAlpha * tanBeta;
+
+  float lamb = max(dot(n2,l3) * multi, 0.0);
   vec3 r = normalize(reflect(-l3, n2));
   float t = max(0.0, dot(v2, r));
-  float x = pow(t, 100.0);
-  float glean = x;
+  float glean = pow(t, 100.0);
 
   outColor = vec4(color * (lamb + glean + 0.20), 1.0);
 }
@@ -187,14 +299,22 @@ function initwebgl() {
                 gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 255, 255]));
 
   var image = new Image();
+  var bump = new Image();
   // image.crossOrigin = "";
   image.src = "illinois512.png";
+  //bump.src = "iliinois512hump.png"
 
   image.addEventListener("load", function() {
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 512, 512, 0, gl.RGBA, gl.UNSIGNED_BYTE, image);
     gl.generateMipmap(gl.TEXTURE_2D);
   });
+
+  // bump.addEventListener("load", function() {
+  //   gl.bindTexture(gl.TEXTURE_2D, texture);
+  //   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 512, 512, 0, gl.RGBA, gl.UNSIGNED_BYTE, image);
+  //   gl.generateMipmap(gl.TEXTURE_2D);
+  // });
 
   //
   // set up second texture and sampler
